@@ -424,25 +424,42 @@ function respawnPlayer() {
     return;
   }
   gameState.lives--;
-  const px = 9 * TILE + 2;
-  const py = 18 * TILE + 2;
-  // 检查出生点是否被占用
-  let canSpawn = true;
-  for (const enemy of gameState.enemies) {
-    if (!enemy.alive) continue;
-    const eb = enemy.getBounds();
-    if (px < eb.right && px + TILE - 4 > eb.left &&
-        py < eb.bottom && py + TILE - 4 > eb.top) {
-      canSpawn = false;
-      break;
+
+  // 尝试多个出生点（底部区域），避免敌人堵住出生点直接判负
+  const spawnCandidates = [
+    { x: 9 * TILE + 2, y: 18 * TILE + 2 },  // 主出生点
+    { x: 4 * TILE + 2, y: 18 * TILE + 2 },  // 左侧备选
+    { x: 14 * TILE + 2, y: 18 * TILE + 2 }, // 右侧备选
+    { x: 4 * TILE + 2, y: 17 * TILE + 2 },  // 左上备选
+    { x: 14 * TILE + 2, y: 17 * TILE + 2 }, // 右上备选
+  ];
+
+  for (const sp of spawnCandidates) {
+    let blocked = false;
+    for (const enemy of gameState.enemies) {
+      if (!enemy.alive) continue;
+      const eb = enemy.getBounds();
+      if (sp.x < eb.right && sp.x + TILE - 4 > eb.left &&
+          sp.y < eb.bottom && sp.y + TILE - 4 > eb.top) {
+        blocked = true;
+        break;
+      }
+    }
+    if (!blocked) {
+      gameState.player = new Tank(sp.x, sp.y, DIR.UP, '#4ade80', true);
+      return;
     }
   }
-  if (canSpawn) {
-    gameState.player = new Tank(px, py, DIR.UP, '#4ade80', true);
-  } else {
-    // 出生点被占 -> 游戏结束
-    gameState.gameOver = true;
+  // 所有出生点都被占 → 清除周围敌人强行复活
+  for (const enemy of gameState.enemies) {
+    const eb = enemy.getBounds();
+    const sp = spawnCandidates[0];
+    if (sp.x < eb.right + TILE && sp.x + TILE - 4 > eb.left - TILE &&
+        sp.y < eb.bottom + TILE && sp.y + TILE - 4 > eb.top - TILE) {
+      enemy.alive = false;
+    }
   }
+  gameState.player = new Tank(spawnCandidates[0].x, spawnCandidates[0].y, DIR.UP, '#4ade80', true);
 }
 
 function spawnEnemy() {
@@ -570,41 +587,23 @@ function update() {
     return;
   }
 
-  // 更新玩家 — 尝试所有按下的方向，选第一个能移动的
+  // 更新玩家
   const player = gameState.player;
   if (player && player.alive) {
-    const dirs = [
-      { key: keys[0], dir: DIR.UP },
-      { key: keys[1], dir: DIR.RIGHT },
-      { key: keys[2], dir: DIR.DOWN },
-      { key: keys[3], dir: DIR.LEFT },
-    ];
-    for (const { key, dir } of dirs) {
-      if (key) {
-        const v = dirVectors[dir];
-        const nx = player.x + v.x * player.speed;
-        const ny = player.y + v.y * player.speed;
-        // 对齐到网格
-        let testX = nx, testY = ny;
-        if (dir === DIR.UP || dir === DIR.DOWN) {
-          testX = Math.round(player.x / (TILE / 2)) * (TILE / 2);
-        } else {
-          testY = Math.round(player.y / (TILE / 2)) * (TILE / 2);
-        }
-        if (player.canMove(testX, testY)) {
-          player.move(dir);
-          break; // 找到可移动方向就停止
-        }
-      }
+    // 按优先级尝试所有按下的方向
+    const pressedDirs = [];
+    for (let i = 0; i < 4; i++) {
+      if (keys[i]) pressedDirs.push(i);
+    }
+    for (const dir of pressedDirs) {
+      player.move(dir);
     }
 
-    // 冷却结束并按下射击键
     if (keys[4] && gameState.fireCooldown <= 0) {
       player.shoot();
       gameState.fireCooldown = FIRE_COOLDOWN;
     }
 
-    // 复活保护时间递减
     if (player.invincible > 0) player.invincible--;
   }
 
