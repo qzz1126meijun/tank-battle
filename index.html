@@ -210,6 +210,7 @@ let gameState = {
   explosions: [],
   shakeTimer: 0,
   baseDestroyed: false,
+  respawnTimer: 0,        // 复活倒计时
 };
 
 // ────────────── 类定义 ──────────────
@@ -228,6 +229,8 @@ class Tank {
     this.moveDir = dir;
     this.aiChangeTimer = 0;
     this.aiChangeInterval = 60 + Math.floor(Math.random() * 60);
+    this.invincible = isPlayer ? 90 : 0;  // 玩家出生后90帧无敌
+    this.stuckFrames = 0;
   }
 
   get centerX() { return this.x + this.width / 2; }
@@ -400,6 +403,7 @@ function loadLevel(levelIndex) {
   gameState.spawnTimer = 0;
   gameState.baseDestroyed = false;
   gameState.shakeTimer = 0;
+  gameState.respawnTimer = 0;
 
   // 玩家出生点：底部中间
   const px = 9 * TILE + 2;
@@ -492,14 +496,33 @@ function updateEnemyAI(enemy) {
 
   enemy.aiChangeTimer++;
 
-  // 偶尔随机改变方向
+  // 尝试移动
+  const moved = enemy.move(enemy.moveDir);
+
+  if (moved) {
+    enemy.stuckFrames = 0;  // 移动成功，重置卡住计数
+  } else {
+    enemy.stuckFrames++;
+    // 连续卡住：先反方向，再随机，避免左右抖动
+    if (enemy.stuckFrames >= 3) {
+      const oppositeDir = (enemy.moveDir + 2) % 4;
+      const choices = [oppositeDir, (enemy.moveDir + 1) % 4, (enemy.moveDir + 3) % 4];
+      enemy.moveDir = choices[Math.floor(Math.random() * 3)];
+      enemy.stuckFrames = 0;
+      enemy.aiChangeTimer = enemy.aiChangeInterval;
+    } else {
+      enemy.moveDir = Math.floor(Math.random() * 4);
+      enemy.aiChangeTimer = enemy.aiChangeInterval;
+    }
+  }
+
+  // 偶尔随机改变方向（朝玩家或随机）
   if (enemy.aiChangeTimer >= enemy.aiChangeInterval) {
     enemy.aiChangeTimer = 0;
-    enemy.aiChangeInterval = 30 + Math.floor(Math.random() * 90);
+    enemy.aiChangeInterval = 40 + Math.floor(Math.random() * 80);
 
-    // 有一定概率朝玩家方向移动
     const p = gameState.player;
-    if (p && p.alive && Math.random() < 0.4) {
+    if (p && p.alive && Math.random() < 0.45) {
       const dx = p.centerX - enemy.centerX;
       const dy = p.centerY - enemy.centerY;
       if (Math.abs(dx) > Math.abs(dy)) {
@@ -508,21 +531,18 @@ function updateEnemyAI(enemy) {
         enemy.moveDir = dy > 0 ? DIR.DOWN : DIR.UP;
       }
     } else {
-      enemy.moveDir = Math.floor(Math.random() * 4);
+      // 避免选择当前方向的反方向（减少来回走）
+      const opposite = (enemy.moveDir + 2) % 4;
+      let newDir = Math.floor(Math.random() * 4);
+      if (newDir === opposite && Math.random() < 0.7) {
+        newDir = (newDir + 1) % 4;
+      }
+      enemy.moveDir = newDir;
     }
   }
 
-  // 尝试移动
-  const moved = enemy.move(enemy.moveDir);
-
-  // 如果撞墙，换个方向
-  if (!moved) {
-    enemy.moveDir = Math.floor(Math.random() * 4);
-    enemy.aiChangeTimer = enemy.aiChangeInterval; // 强制下次改变
-  }
-
   // 随机射击
-  if (Math.random() < 0.015) {
+  if (Math.random() < 0.02) {
     enemy.shoot();
   }
 }
@@ -550,18 +570,42 @@ function update() {
     return;
   }
 
-  // 更新玩家
+  // 更新玩家 — 尝试所有按下的方向，选第一个能移动的
   const player = gameState.player;
   if (player && player.alive) {
-    if (keys[0]) player.move(DIR.UP);
-    else if (keys[1]) player.move(DIR.RIGHT);
-    else if (keys[2]) player.move(DIR.DOWN);
-    else if (keys[3]) player.move(DIR.LEFT);
+    const dirs = [
+      { key: keys[0], dir: DIR.UP },
+      { key: keys[1], dir: DIR.RIGHT },
+      { key: keys[2], dir: DIR.DOWN },
+      { key: keys[3], dir: DIR.LEFT },
+    ];
+    for (const { key, dir } of dirs) {
+      if (key) {
+        const v = dirVectors[dir];
+        const nx = player.x + v.x * player.speed;
+        const ny = player.y + v.y * player.speed;
+        // 对齐到网格
+        let testX = nx, testY = ny;
+        if (dir === DIR.UP || dir === DIR.DOWN) {
+          testX = Math.round(player.x / (TILE / 2)) * (TILE / 2);
+        } else {
+          testY = Math.round(player.y / (TILE / 2)) * (TILE / 2);
+        }
+        if (player.canMove(testX, testY)) {
+          player.move(dir);
+          break; // 找到可移动方向就停止
+        }
+      }
+    }
 
-    if (keys[4] && gameState.fireCooldown === 0) {
+    // 冷却结束并按下射击键
+    if (keys[4] && gameState.fireCooldown <= 0) {
       player.shoot();
       gameState.fireCooldown = FIRE_COOLDOWN;
     }
+
+    // 复活保护时间递减
+    if (player.invincible > 0) player.invincible--;
   }
 
   // 更新敌人AI
@@ -600,17 +644,18 @@ function update() {
     }
 
     // 敌人子弹打玩家
-    if (!bullet.isPlayerBullet && player && player.alive) {
+    if (!bullet.isPlayerBullet && player && player.alive && player.invincible <= 0) {
       const pb = player.getBounds();
       if (bullet.x >= pb.left && bullet.x <= pb.right &&
           bullet.y >= pb.top && bullet.y <= pb.bottom) {
         bullet.alive = false;
         player.alive = false;
+        gameState.respawnTimer = 60;  // 60帧后复活
         gameState.explosions.push({
           x: player.centerX, y: player.centerY,
-          life: 20, type: 'big'
+          life: 25, type: 'big'
         });
-        gameState.shakeTimer = 10;
+        gameState.shakeTimer = 12;
       }
     }
   }
@@ -625,12 +670,14 @@ function update() {
   }
   gameState.explosions = gameState.explosions.filter(e => e.life > 0);
 
-  // 玩家死亡处理
-  if (player && !player.alive && gameState.explosions.filter(e => e.type === 'big' && e.life <= 16).length > 0) {
-    gameState.player = null;
-  }
-  if (!gameState.player && gameState.lives > 0 && gameState.explosions.length === 0) {
-    respawnPlayer();
+  // 复活计时器
+  if (gameState.respawnTimer > 0) {
+    gameState.respawnTimer--;
+    if (gameState.respawnTimer === 0) {
+      // 复活时间到 — 清理死亡玩家并重生
+      gameState.player = null;
+      respawnPlayer();
+    }
   }
 
   // 检查胜利条件
@@ -748,10 +795,11 @@ function drawTank(tank) {
 
   ctx.restore();
 
-  // 闪烁效果（出生保护）
-  if (tank.spawnProtection > 0) {
-    ctx.fillStyle = `rgba(255,255,255,${tank.spawnProtection / 60})`;
-    ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
+  // 闪烁效果（出生无敌保护）
+  if (tank.invincible > 0) {
+    const alpha = Math.abs(Math.sin(Date.now() / 100)) * 0.7;
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.fillRect(x - 2, y - 2, width + 4, height + 4);
   }
 }
 
