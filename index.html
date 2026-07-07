@@ -153,6 +153,11 @@ let gameOver = false;
 let respawnCountdown = 0;      // >0 = 死亡动画中；归零时复活
 let prevRespawnCountdown = 0;  // 用于检测状态变化
 
+// ── 诊断 ──
+var frameCount = 0;
+var lastUpdateTime = Date.now();
+var freezeDetected = false;
+
 // ── 按键 ──
 const keys = [false, false, false, false, false]; // U R D L FIRE
 
@@ -555,9 +560,20 @@ function update() {
   }
 
   // ── 11. 失败 ──
-  if (!gameOver && lives <= 0 && respawnCountdown <= 0 && !player) {
+  if (!gameOver && lives <= 0 && respawnCountdown <= 0 && (!player || !player.alive)) {
     gameOver = true;
-    console.log('[坦克大战] 游戏结束');
+    console.log('[坦克大战] 游戏结束 (生命耗尽)');
+  }
+
+  // ── 12. 安全网：玩家丢失但还有命 → 强制复活 ──
+  if (!gameOver && lives > 0 && respawnCountdown <= 0 && (!player || !player.alive)) {
+    console.warn('[坦克大战] ⚠ 安全网触发：玩家丢失但生命=' + lives + '，强制复活');
+    player = null;
+    tryRespawn();
+    if (!player) {
+      console.error('[坦克大战] ❌ 安全网复活失败！强行创建玩家');
+      player = makeTank(9*TILE+2, 18*TILE+2, 0, '#4ade80', true);
+    }
   }
 }
 
@@ -672,14 +688,34 @@ function render() {
 
   // 复活倒计时 HUD
   if (respawnCountdown > 0) {
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(0, canvas.height/2 - 30, canvas.width, 60);
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, canvas.height/2 - 35, canvas.width, 70);
     ctx.fillStyle = '#fbbf24';
-    ctx.font = 'bold 24px "Courier New"';
+    ctx.font = 'bold 26px "Courier New"';
     ctx.textAlign = 'center';
-    ctx.fillText('阵亡! 复活中... ' + Math.ceil(respawnCountdown/60) + 's', canvas.width/2, canvas.height/2 + 8);
+    ctx.fillText('💀 阵亡! 复活倒计时: ' + (Math.ceil(respawnCountdown/60)) + ' 秒', canvas.width/2, canvas.height/2 + 10);
     ctx.textAlign = 'start';
   }
+
+  // 诊断面板 (右上角)
+  var diagX = canvas.width - 200, diagY = 8;
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(diagX - 5, diagY - 5, 200, 90);
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#0f0';
+  var alive = (player && player.alive);
+  ctx.fillText('FPS:' + (alive ? '▶' : '■') + ' 帧#' + frameCount, canvas.width - 10, diagY + 14);
+  ctx.fillStyle = alive ? '#0f0' : '#f00';
+  ctx.fillText('玩家:' + (alive ? '存活' : (respawnCountdown > 0 ? '死亡(' + respawnCountdown + ')' : 'NULL!')), canvas.width - 10, diagY + 28);
+  ctx.fillStyle = '#ff0';
+  ctx.fillText('生命:' + lives + ' 敌人:' + enemiesKilled + '/' + totalEnemies, canvas.width - 10, diagY + 42);
+  ctx.fillText('子弹:' + bullets.length + ' 爆炸:' + explosions.length, canvas.width - 10, diagY + 56);
+  if (gameOver) {
+    ctx.fillStyle = '#f00';
+    ctx.fillText('GAME OVER', canvas.width - 10, diagY + 74);
+  }
+  ctx.textAlign = 'start';
 
   ctx.restore();
 }
@@ -701,13 +737,19 @@ function updateUI() {
 
 // ── 主循环 ──
 function gameLoop() {
+  frameCount++;
+  var now = Date.now();
+  if (now - lastUpdateTime > 500) {
+    console.warn('[坦克大战] ⚠ 帧间隔异常: ' + (now - lastUpdateTime) + 'ms (帧#' + frameCount + ')');
+  }
+  lastUpdateTime = now;
+
   try {
     update();
     render();
     updateUI();
   } catch (e) {
-    console.error('[坦克大战] 错误:', e);
-    // 即使出错也继续循环
+    console.error('[坦克大战] ❌ 游戏循环异常:', e.message, e.stack);
   }
   requestAnimationFrame(gameLoop);
 }
