@@ -391,12 +391,15 @@ function tryRespawn() {
     }
   }
 
-  // 强制清场
+  // 强制清场 (同时正确计数)
   console.log('[坦克大战] 出生点被占，清除附近敌人');
   for (var i = 0; i < enemies.length; i++) {
     var eb = tankBounds(enemies[i]);
     if (eb.bottom > 16*TILE && eb.top < 20*TILE && eb.right > 3*TILE && eb.left < 16*TILE) {
-      enemies[i].alive = false;
+      if (enemies[i].alive) {
+        enemies[i].alive = false;
+        enemiesKilled++;  // ★ 修复：清场也要计入击杀数
+      }
     }
   }
   player = makeTank(spots[0].x, spots[0].y, 0, '#4ade80', true);
@@ -553,8 +556,10 @@ function update() {
   explosions = explosions.filter(function(e){return e.life > 0;});
 
   // ── 10. 胜利 ──
-  if (!gameOver && enemiesKilled >= totalEnemies) {
-    console.log('[坦克大战] 关卡通关！');
+  var aliveEnemies = 0;
+  for (var i = 0; i < enemies.length; i++) { if (enemies[i].alive) aliveEnemies++; }
+  if (!gameOver && (enemiesKilled >= totalEnemies || (enemiesSpawned >= totalEnemies && aliveEnemies === 0))) {
+    console.log('[坦克大战] 关卡通关！击杀=' + enemiesKilled + ' 存活=' + aliveEnemies);
     level++;
     loadLevel((level - 1) % LEVELS.length);
   }
