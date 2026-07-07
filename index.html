@@ -848,7 +848,9 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     keys[idx] = true;
   }
-  if (e.key === 'r' || e.key === 'R') {
+  // 使用 e.code 更可靠，兼容不同键盘布局和输入法
+  if (e.code === 'KeyR') {
+    e.preventDefault();
     resetGame();
   }
 });
