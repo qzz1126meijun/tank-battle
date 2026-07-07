@@ -210,7 +210,7 @@ let gameState = {
   explosions: [],
   shakeTimer: 0,
   baseDestroyed: false,
-  respawnTimer: 0,        // 复活倒计时
+  deathTimer: 0,          // 死亡动画 / 复活倒计时
 };
 
 // ────────────── 类定义 ──────────────
@@ -403,7 +403,7 @@ function loadLevel(levelIndex) {
   gameState.spawnTimer = 0;
   gameState.baseDestroyed = false;
   gameState.shakeTimer = 0;
-  gameState.respawnTimer = 0;
+  gameState.deathTimer = 0;
 
   // 玩家出生点：底部中间
   const px = 9 * TILE + 2;
@@ -416,50 +416,6 @@ function resetGame() {
   gameState.lives = 3;
   gameState.level = 0;
   loadLevel(0);
-}
-
-function respawnPlayer() {
-  if (gameState.lives <= 0) {
-    gameState.gameOver = true;
-    return;
-  }
-  gameState.lives--;
-
-  // 尝试多个出生点（底部区域），避免敌人堵住出生点直接判负
-  const spawnCandidates = [
-    { x: 9 * TILE + 2, y: 18 * TILE + 2 },  // 主出生点
-    { x: 4 * TILE + 2, y: 18 * TILE + 2 },  // 左侧备选
-    { x: 14 * TILE + 2, y: 18 * TILE + 2 }, // 右侧备选
-    { x: 4 * TILE + 2, y: 17 * TILE + 2 },  // 左上备选
-    { x: 14 * TILE + 2, y: 17 * TILE + 2 }, // 右上备选
-  ];
-
-  for (const sp of spawnCandidates) {
-    let blocked = false;
-    for (const enemy of gameState.enemies) {
-      if (!enemy.alive) continue;
-      const eb = enemy.getBounds();
-      if (sp.x < eb.right && sp.x + TILE - 4 > eb.left &&
-          sp.y < eb.bottom && sp.y + TILE - 4 > eb.top) {
-        blocked = true;
-        break;
-      }
-    }
-    if (!blocked) {
-      gameState.player = new Tank(sp.x, sp.y, DIR.UP, '#4ade80', true);
-      return;
-    }
-  }
-  // 所有出生点都被占 → 清除周围敌人强行复活
-  for (const enemy of gameState.enemies) {
-    const eb = enemy.getBounds();
-    const sp = spawnCandidates[0];
-    if (sp.x < eb.right + TILE && sp.x + TILE - 4 > eb.left - TILE &&
-        sp.y < eb.bottom + TILE && sp.y + TILE - 4 > eb.top - TILE) {
-      enemy.alive = false;
-    }
-  }
-  gameState.player = new Tank(spawnCandidates[0].x, spawnCandidates[0].y, DIR.UP, '#4ade80', true);
 }
 
 function spawnEnemy() {
@@ -566,63 +522,73 @@ function updateEnemyAI(enemy) {
 
 // ────────────── 更新 ──────────────
 function update() {
+  // 已经结束就不更新
   if (gameState.gameOver || gameState.gameWin) return;
 
-  // 射击冷却
+  // ── 死亡复活动画计时 ──
+  // 注意：玩家死亡后 alive=false，但对象还在；deathTimer 倒计时复活
+  if (gameState.deathTimer > 0) {
+    gameState.deathTimer--;
+    if (gameState.deathTimer <= 0) {
+      // 复活时刻：清掉旧尸体，尝试创建新玩家
+      gameState.player = null;
+      tryRespawn();
+    }
+    // 死亡动画期间：敌人、子弹、爆炸一切照常运行
+  }
+
+  // ── 射击冷却 ──
   if (gameState.fireCooldown > 0) gameState.fireCooldown--;
 
-  // 屏幕震动
+  // ── 屏幕震动 ──
   if (gameState.shakeTimer > 0) gameState.shakeTimer--;
 
-  // 生成敌人
+  // ── 敌人生成 ──
   gameState.spawnTimer++;
   if (gameState.spawnTimer >= gameState.spawnDelay && gameState.enemiesSpawned < gameState.totalEnemies) {
     gameState.spawnTimer = 0;
     spawnEnemy();
   }
 
-  // 检查基地是否被摧毁
-  if (gameState.baseDestroyed) {
+  // ── 基地被毁 ──
+  if (gameState.baseDestroyed && !gameState.gameOver) {
     gameState.gameOver = true;
+    console.log('[坦克大战] 基地被摧毁，游戏结束');
     return;
   }
 
-  // 更新玩家
+  // ── 玩家操作 ──
   const player = gameState.player;
   if (player && player.alive) {
-    // 按优先级尝试所有按下的方向
-    const pressedDirs = [];
-    for (let i = 0; i < 4; i++) {
-      if (keys[i]) pressedDirs.push(i);
+    // 移动：遍历所有按下的方向
+    for (let d = 0; d < 4; d++) {
+      if (keys[d]) player.move(d);
     }
-    for (const dir of pressedDirs) {
-      player.move(dir);
-    }
-
+    // 射击
     if (keys[4] && gameState.fireCooldown <= 0) {
       player.shoot();
       gameState.fireCooldown = FIRE_COOLDOWN;
     }
-
+    // 无敌倒计时
     if (player.invincible > 0) player.invincible--;
   }
 
-  // 更新敌人AI
+  // ── 敌人 AI ──
   for (const enemy of gameState.enemies) {
     updateEnemyAI(enemy);
   }
 
-  // 更新子弹
+  // ── 子弹飞行 + 地图碰撞 ──
   for (const bullet of gameState.bullets) {
     if (bullet.alive) bullet.update();
   }
 
-  // 子弹 vs 坦克碰撞检测
+  // ── 子弹 vs 坦克碰撞 ──
   for (const bullet of gameState.bullets) {
     if (!bullet.alive) continue;
 
-    // 玩家子弹打敌人
     if (bullet.isPlayerBullet) {
+      // 玩家子弹 → 敌人
       for (const enemy of gameState.enemies) {
         if (!enemy.alive) continue;
         const eb = enemy.getBounds();
@@ -632,70 +598,100 @@ function update() {
           enemy.alive = false;
           gameState.enemiesKilled++;
           gameState.score += 100;
-          gameState.explosions.push({
-            x: enemy.centerX, y: enemy.centerY,
-            life: 15, type: 'medium'
-          });
+          gameState.explosions.push({ x: enemy.centerX, y: enemy.centerY, life: 15, type: 'medium' });
           gameState.shakeTimer = 5;
           break;
         }
       }
-    }
-
-    // 敌人子弹打玩家
-    if (!bullet.isPlayerBullet && player && player.alive && player.invincible <= 0) {
-      const pb = player.getBounds();
-      if (bullet.x >= pb.left && bullet.x <= pb.right &&
-          bullet.y >= pb.top && bullet.y <= pb.bottom) {
-        bullet.alive = false;
-        player.alive = false;
-        gameState.respawnTimer = 60;  // 60帧后复活
-        gameState.explosions.push({
-          x: player.centerX, y: player.centerY,
-          life: 25, type: 'big'
-        });
-        gameState.shakeTimer = 12;
+    } else {
+      // 敌人子弹 → 玩家（活着 + 无敌结束才能命中）
+      if (player && player.alive && player.invincible <= 0) {
+        const pb = player.getBounds();
+        if (bullet.x >= pb.left && bullet.x <= pb.right &&
+            bullet.y >= pb.top && bullet.y <= pb.bottom) {
+          bullet.alive = false;
+          // ★ 立即扣命 + 标记死亡
+          gameState.lives--;
+          player.alive = false;
+          gameState.deathTimer = 60;
+          gameState.explosions.push({ x: player.centerX, y: player.centerY, life: 25, type: 'big' });
+          gameState.shakeTimer = 12;
+          console.log('[坦克大战] 玩家死亡，剩余生命:', gameState.lives, '，60帧后复活');
+        }
       }
     }
   }
 
-  // 清理
+  // ── 清理 ──
   gameState.bullets = gameState.bullets.filter(b => b.alive);
   gameState.enemies = gameState.enemies.filter(e => e.alive);
 
-  // 更新爆炸
-  for (const exp of gameState.explosions) {
-    exp.life--;
-  }
+  // ── 爆炸动画 ──
+  for (const exp of gameState.explosions) exp.life--;
   gameState.explosions = gameState.explosions.filter(e => e.life > 0);
 
-  // 复活计时器
-  if (gameState.respawnTimer > 0) {
-    gameState.respawnTimer--;
-    if (gameState.respawnTimer === 0) {
-      // 复活时间到 — 清理死亡玩家并重生
-      gameState.player = null;
-      respawnPlayer();
-    }
+  // ── 胜利判定 ──
+  if (gameState.enemiesKilled >= gameState.totalEnemies && !gameState.gameOver) {
+    console.log('[坦克大战] 关卡通过！进入下一关');
+    gameState.level++;
+    const idx = (gameState.level - 1) % levels.length;
+    loadLevel(idx);
+    // loadLevel 会重置 enemiesKilled/spawned，恢复 gameOver/gameWin
   }
 
-  // 检查胜利条件
-  if (gameState.enemiesKilled >= gameState.totalEnemies) {
-    gameState.gameWin = true;
-    if (gameState.level < levels.length - 1) {
-      gameState.level++;
-      loadLevel(gameState.level);
-    } else {
-      // 通关！
-      gameState.level++;
-      loadLevel(0); // 循环
-    }
-  }
-
-  // 检查失败条件
-  if (gameState.lives <= 0 && !gameState.player && gameState.explosions.length === 0) {
+  // ── 失败判定：命用完 + 不在死亡动画中 + 没有玩家 ──
+  if (gameState.lives <= 0 && gameState.deathTimer <= 0 && !gameState.player) {
     gameState.gameOver = true;
+    console.log('[坦克大战] 生命耗尽，游戏结束');
   }
+}
+
+// 复活：从死亡动画恢复
+function tryRespawn() {
+  if (gameState.lives <= 0) {
+    gameState.gameOver = true;
+    console.log('[坦克大战] 复活失败：生命耗尽');
+    return;
+  }
+
+  // 多个出生点依次尝试
+  const spots = [
+    { x: 9 * TILE + 2,  y: 18 * TILE + 2 },
+    { x: 4 * TILE + 2,  y: 18 * TILE + 2 },
+    { x: 14 * TILE + 2, y: 18 * TILE + 2 },
+    { x: 9 * TILE + 2,  y: 17 * TILE + 2 },
+    { x: 4 * TILE + 2,  y: 17 * TILE + 2 },
+    { x: 14 * TILE + 2, y: 17 * TILE + 2 },
+  ];
+
+  for (const sp of spots) {
+    let blocked = false;
+    for (const enemy of gameState.enemies) {
+      if (!enemy.alive) continue;
+      const eb = enemy.getBounds();
+      if (sp.x < eb.right && sp.x + TILE - 4 > eb.left &&
+          sp.y < eb.bottom && sp.y + TILE - 4 > eb.top) {
+        blocked = true;
+        break;
+      }
+    }
+    if (!blocked) {
+      gameState.player = new Tank(sp.x, sp.y, DIR.UP, '#4ade80', true);
+      console.log('[坦克大战] 复活成功，出生点:', sp.x / TILE, sp.y / TILE);
+      return;
+    }
+  }
+
+  // 全被堵：清场
+  console.log('[坦克大战] 出生点全被占，强制清除附近敌人');
+  for (const enemy of gameState.enemies) {
+    const eb = enemy.getBounds();
+    if (eb.bottom > (17 * TILE) && eb.top < (19 * TILE + TILE) &&
+        eb.right > (4 * TILE) && eb.left < (15 * TILE + TILE)) {
+      enemy.alive = false;
+    }
+  }
+  gameState.player = new Tank(spots[0].x, spots[0].y, DIR.UP, '#4ade80', true);
 }
 
 // ────────────── 渲染 ──────────────
